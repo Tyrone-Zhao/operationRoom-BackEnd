@@ -1,142 +1,163 @@
-from flask import current_app
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import AnonymousUserMixin
+from pymysql import connect, cursors
+from pymysql.err import OperationalError
+import os
+import time
+import configparser as cparser
+import os
 
-from itsdangerous import (
-    TimedJSONWebSignatureSerializer as Serializer,
-    BadSignature,
-    SignatureExpired
-)
+# __file__ refers to the file settings.py
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_CONFIG_PATH = os.path.join(APP_ROOT, 'db_config.ini')
 
-from deep_understand_flask.extensions import bcrypt
+# ======== 封装读取 db_config.ini 文件设置 ========= #
 
-db = SQLAlchemy()
+# 框架
+# def db_config(configPath='/db_config.ini'):
+#     base_dir = str(os.path.dirname(os.path.dirname(__file__)))
+#     base_dir = base_dir.replace('\\', '/')
+#     file_path = base_dir + configPath
+#     print(file_path)
 
-tags = db.Table(
-    'post_tags',
-    db.Column('post_id', db.Integer, db.ForeignKey('post.id')),
-    db.Column('tag_id', db.Integer, db.ForeignKey('tag.id'))
-)
+#     cf = cparser.ConfigParser()
+#     cf.read(file_path)
 
-roles = db.Table(
-    'role_users',
-    db.Column('user_id', db.Integer, db.ForeignKey('user.id')),
-    db.Column('role_id', db.Integer, db.ForeignKey('role.id'))
-)
+#     host = cf.get('mysqlconf', 'host')
+#     port = cf.get('mysqlconf', 'port')
+#     db = cf.get('mysqlconf', 'db_name')
+#     user = cf.get('mysqlconf', 'user')
+#     password = cf.get('mysqlconf', 'password')
+
+#     return host, port, db, user, password
 
 
-class User(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    username = db.Column(db.String(255), unique=True)
-    password = db.Column(db.String(255))
-    posts = db.relationship('Post', backref='user', lazy='dynamic')
-    roles = db.relationship(
-        'Role',
-        secondary=roles,
-        backref=db.backref('users', lazy='dynamic')
-    )
+# 模块
+def db_config(configPath="db_config.ini"):
+    cf = cparser.ConfigParser()
+    cf.read(configPath)
 
-    def __init__(self, username):
-        self.username = username
+    host = cf.get('mysqlconf', 'host')
+    port = cf.get('mysqlconf', 'port')
+    db = cf.get('mysqlconf', 'db_name')
+    user = cf.get('mysqlconf', 'user')
+    password = cf.get('mysqlconf', 'password')
 
-        default = Role.query.filter_by(name="default").one()
-        self.roles.append(default)
+    return host, port, db, user, password
 
-    def __repr__(self):
-        return '<User {}>'.format(self.username)
+# ======== 封装 MySQL 基本操作 ========= #
 
-    def set_password(self, password):
-        self.password = bcrypt.generate_password_hash(password)
 
-    def check_password(self, password):
-        return bcrypt.check_password_hash(self.password, password)
+class DB():
 
-    def is_authenticated(self):
-        if isinstance(self, AnonymousUserMixin):
-            return False
-        else:
-            return True
-
-    def is_active(self):
-        return True
-
-    def is_anonymous(self):
-        if isinstance(self, AnonymousUserMixin):
-            return True
-        else:
-            return False
-
-    def get_id(self):
-        return unicode(self.id)
-
-    @staticmethod
-    def verify_auth_token(token):
-        s = Serializer(current_app.config['SECRET_KEY'])
-
+    def __init__(self, configPath=DB_CONFIG_PATH):
         try:
-            data = s.loads(token)
-        except SignatureExpired:
-            return None
-        except BadSignature:
-            return None
+            config_datas = db_config(configPath)
+            print(config_datas)
+            # 连接数据库
+            self.conn = connect(
+                host=config_datas[0],
+                user=config_datas[3],
+                password=config_datas[4],
+                db=config_datas[2],
+                charset='utf8mb4',
+                cursorclass=cursors.DictCursor
+            )
+        except OperationalError as e:
+            print("Mysql Error %d: %s" % (e.args[0], e.args[1]))
 
-        user = User.query.get(data['id'])
-        return user
+    # 清除表数据
+    def clear(self, table_name):
+        real_sql2 = 'truncate table ' + table_name + ';'
+        real_sql = 'delete from ' + table_name + ';'
+        print(real_sql)
+        with self.conn.cursor() as cursor:
+            cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
+            cursor.execute(real_sql)
+            cursor.execute(real_sql2)
+        self.conn.commit()
+
+    # 直接执行select_sql语句
+    def select_sql(self, real_sql):
+        print(real_sql)
+        with self.conn.cursor() as cursor:
+            cursor.execute(real_sql)
+        self.conn.commit()
+        return cursor.fetchall(), cursor.rowcount, real_sql
+
+    # 直接执行insert_sql语句
+    def insert_sql(self, real_sql):
+        print(real_sql)
+        with self.conn.cursor() as cursor:
+            cursor.execute(real_sql)
+        self.conn.commit()
+
+    # 插入表数据
+    def insert(self, table_name, table_data):
+        for key in table_data:
+            table_data[key] = "'" + str(table_data[key]) + "'"
+        key = ','.join(table_data.keys())
+        value = ','.join(table_data.values())
+        real_sql = 'INSERT INTO ' + table_name + \
+            '(' + key + ') VALUES (' + value + ')'
+        print(real_sql)
+
+        with self.conn.cursor() as cursor:
+            cursor.execute(real_sql)
+        self.conn.commit()
+
+    # 查询表数据
+    def select(self, table_name, column, value, like='', whats=[],
+               order=''):
+        text = ' WHERE '
+        num = len(column)
+        # 拼接列和数据
+        if num == 0 and like == '':
+            text = ''
+        elif num == 1 and like == '':
+            text += column[0] + "='" + str(value[0]) + "'"
+        elif num > 1 and like == '':
+            for i in range(len(column)):
+                text += column[i] + "='" + str(value[i]) + "' AND "
+                num -= 1
+                if num == 1:
+                    text += column[i + 1] + "='" + str(value[i + 1]) + "'"
+                    break
+        elif num == 1 and like != '':
+            text += column[0] + " like '" + like + "'"
+        elif num > 1 and like != '':
+            text += column[i] + "='" + str(value[i]) + "' AND "
+            num -= 1
+            if num == 1:
+                text += column[i + 1] + " like '" + like + "'"
+        else:
+            print('ColumnValue Error')
+
+        what = ''
+        num_what = len(whats)
+        if num_what == 0:
+            what = '*'
+        elif num_what == 1:
+            what = whats[0]
+        elif num_what > 1:
+            for i in range(len(whats)):
+                what += whats[i]
+                what += ','
+                num_what -= 1
+                if num_what == 1:
+                    what += whats[i + 1]
+                    break
+
+        real_sql = 'SELECT ' + what + ' FROM ' + table_name + text + order
+        print(real_sql)
+
+        with self.conn.cursor() as cursor:
+            cursor.execute(real_sql)
+        self.conn.commit()
+        return cursor.fetchall(), cursor.rowcount, real_sql
+
+    # 关闭数据库连接
+    def close(self):
+        self.conn.close()
 
 
-class Role(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(80), unique=True)
-    description = db.Column(db.String(255))
-
-    def __init__(self, name):
-        self.name = name
-
-    def __repr__(self):
-        return '<Role {}>'.format(self.name)
-
-
-class Post(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    title = db.Column(db.String(255))
-    text = db.Column(db.Text())
-    publish_date = db.Column(db.DateTime())
-    user_id = db.Column(db.Integer(), db.ForeignKey('user.id'))
-    comments = db.relationship(
-        'Comment',
-        backref='post',
-        lazy='dynamic'
-    )
-    tags = db.relationship(
-        'Tag',
-        secondary=tags,
-        backref=db.backref('posts', lazy='dynamic')
-    )
-
-    def __init__(self, title):
-        self.title = title
-
-    def __repr__(self):
-        return "<Post '{}'>".format(self.title)
-
-
-class Comment(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(255))
-    text = db.Column(db.Text())
-    date = db.Column(db.DateTime())
-    post_id = db.Column(db.Integer(), db.ForeignKey('post.id'))
-
-    def __repr__(self):
-        return "<Comment '{}'>".format(self.text[:15])
-
-
-class Tag(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    title = db.Column(db.String(255))
-
-    def __init__(self, title):
-        self.title = title
-
-    def __repr__(self):
-        return "<Tag '{}'>".format(self.title)
+if __name__ == "__main__":
+    db = DB()

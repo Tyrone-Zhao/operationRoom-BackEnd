@@ -1,20 +1,15 @@
 import os
 
 from flask_script import Manager, Server
-from flask_migrate import Migrate, MigrateCommand
-
-from deep_understand_flask import create_app
-from deep_understand_flask.models import db, User, Post, Tag, Comment
+from operationRoom import create_app
 
 # default to dev config
-env = os.environ.get('deep_understand_flask_ENV', 'dev')
-app = create_app('deep_understand_flask.config.%sConfig' % env.capitalize())
+env = os.environ.get('operationRoom_ENV', 'dev')
+app = create_app('operationRoom.config.%sConfig' % env.capitalize())
 
-migrate = Migrate(app, db)
 
 manager = Manager(app)
 manager.add_command("server", Server())
-manager.add_command('db', MigrateCommand)
 
 
 @manager.shell
